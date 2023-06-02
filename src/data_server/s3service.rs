@@ -1,3 +1,6 @@
+use crate::backends::storage_backend::StorageBackend;
+use crate::data_server::cors;
+use crate::data_server::utils::buffered_s3_sink::BufferedS3Sink;
 use anyhow::Result;
 use aruna_file::helpers::footer_parser::FooterParser;
 use aruna_file::streamreadwrite::ArunaStreamReadWriter;
@@ -8,13 +11,19 @@ use aruna_file::transformers::decrypt::ChaCha20Dec;
 use aruna_file::transformers::encrypt::ChaCha20Enc;
 use aruna_file::transformers::filter::Filter;
 use aruna_file::transformers::footer::FooterGenerator;
+use aruna_rust_api::api::internal::v1::internal_authorize_service_client::InternalAuthorizeServiceClient;
+use aruna_rust_api::api::internal::v1::Authorization;
 use aruna_rust_api::api::internal::v1::FinalizeObjectRequest;
+use aruna_rust_api::api::internal::v1::GetCollectionByBucketRequest;
 use aruna_rust_api::api::internal::v1::GetObjectLocationRequest;
 use aruna_rust_api::api::internal::v1::GetOrCreateEncryptionKeyRequest;
+use aruna_rust_api::api::internal::v1::GetTokenFromSecretRequest;
 use aruna_rust_api::api::internal::v1::Location as ArunaLocation;
 use aruna_rust_api::api::internal::v1::PartETag;
 use aruna_rust_api::api::storage::models::v1::Hash;
 use aruna_rust_api::api::storage::models::v1::Hashalgorithm;
+use aruna_rust_api::api::storage::models::v1::KeyValue;
+use aruna_rust_api::api::storage::services::v1::UpdateCollectionRequest;
 use futures::StreamExt;
 use futures::TryStreamExt;
 use md5::{Digest, Md5};
@@ -28,31 +37,31 @@ use s3s::S3;
 use sha2::Sha256;
 use std::sync::Arc;
 
-use crate::backends::storage_backend::StorageBackend;
-use crate::data_server::cors;
-use crate::data_server::utils::buffered_s3_sink::BufferedS3Sink;
-
 use super::data_handler::DataHandler;
 use super::utils::aruna_notifier::ArunaNotifier;
 use super::utils::buffered_s3_sink::parse_notes_get_etag;
 use super::utils::ranges::calculate_content_length_from_range;
 use super::utils::ranges::calculate_ranges;
+use super::utils::user_client;
 use crate::data_server::utils::utils::create_location_from_hash;
 
 #[derive(Debug)]
 pub struct S3ServiceServer {
     backend: Arc<Box<dyn StorageBackend>>,
     data_handler: Arc<DataHandler>,
+    aruna_url: String,
 }
 
 impl S3ServiceServer {
     pub async fn new(
         backend: Arc<Box<dyn StorageBackend>>,
         data_handler: Arc<DataHandler>,
+        aruna_url: String,
     ) -> Result<Self> {
         Ok(S3ServiceServer {
             backend: backend.clone(),
             data_handler,
+            aruna_url,
         })
     }
 }
@@ -64,12 +73,6 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
-        // if req.input.content_length == 0 {
-        //     return Err(s3_error!(
-        //         MissingContentLength,
-        //         "Missing or invalid (0) content-length"
-        //     ));
-        // }
         let content_length = match req.input.content_length {
             Some(content_length) => content_length,
             None => {
@@ -320,12 +323,6 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<UploadPartInput>,
     ) -> S3Result<S3Response<UploadPartOutput>> {
-        // if req.input.content_length == 0 {
-        //     return Err(s3_error!(
-        //         MissingContentLength,
-        //         "Missing or invalid (0) content-length"
-        //     ));
-        // }
         let content_length = match req.input.content_length {
             Some(content_length) => content_length,
             None => {
@@ -477,7 +474,7 @@ impl S3 for S3ServiceServer {
             .internal_notifier_service
             .clone()
             .get_object_location(GetObjectLocationRequest {
-                // Muss CORS-Header liefern
+                // Needs to insert CORS-Headers
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
                 access_key: creds.access_key,
@@ -666,23 +663,66 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<PutBucketCorsInput>,
     ) -> S3Result<S3Response<PutBucketCorsOutput>> {
-        let cors: Vec<cors::CORS> = req
-            .input
-            .cors_configuration
-            .cors_rules
-            .into_iter()
-            .map(|x| x.into())
-            .collect();
+        let mut auth_client =
+            match InternalAuthorizeServiceClient::connect(self.aruna_url.clone()).await {
+                Ok(client) => client,
+                Err(err) => {
+                    log::error!("{}", err);
+                    // This is an internal connection error (?)
+                    return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
+                }
+            };
 
-        let token = match req.credentials {
-            Some(cred) => todo!("Interner request: GetTokenFromSecret"),
+        let credentials = match req.credentials {
+            Some(cred) => cred,
             None => {
                 log::error!("{}", "Not identified PutBucketCorsRequest");
                 return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
             }
         };
-
-        Err(s3_error!(NotImplemented, "CORS not implemented"))
+        let token = match auth_client
+            .get_token_from_secret(GetTokenFromSecretRequest {
+                authorization: Some(Authorization {
+                    secretkey: credentials.secret_key.expose().to_string(),
+                    accesskey: credentials.access_key.clone(),
+                }),
+            })
+            .await
+        {
+            Ok(response) => response.into_inner().token,
+            Err(err) => {
+                log::error!("{}", "Not identified PutBucketCorsRequest");
+                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
+            }
+        };
+        let cors: cors::CORSVec = req.input.cors_configuration.cors_rules.into();
+        let mut user_client = user_client::UserClient::new(self.aruna_url.clone(), token).await;
+        let collection = self
+            .data_handler
+            .internal_notifier_service
+            .clone()
+            .get_collection_by_bucket(GetCollectionByBucketRequest {
+                bucket: req.input.bucket,
+                access_key: credentials.access_key,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        match user_client
+            .collection_service
+            .update_collection(UpdateCollectionRequest {
+                collection_id: collection.collection_id,
+                labels: vec![KeyValue {
+                    key: "apps.aruna-storage.org/cors".to_string(),
+                    value: serde_json::to_string(&cors).unwrap(),
+                }],
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(response) => Ok(S3Response::new(PutBucketCorsOutput {})),
+            Err(err) => Err(s3_error!(NotSignedUp, "Your Account is not signed up")),
+        }
     }
 
     async fn get_bucket_cors(
