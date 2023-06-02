@@ -1,6 +1,6 @@
 use anyhow::Result;
 use hyper::Server;
-use s3s::service::S3Service;
+use s3s::service::{S3Service, S3ServiceBuilder};
 use std::{net::TcpListener, sync::Arc};
 use tracing::info;
 
@@ -23,14 +23,13 @@ impl S3Server {
     ) -> Result<Self> {
         let server_url = aruna_server.into();
 
-        let mut service =
-            S3Service::new(Box::new(S3ServiceServer::new(backend, data_handler).await?));
+        let mut service = S3ServiceBuilder::new(S3ServiceServer::new(backend, data_handler).await?);
 
         service.set_base_domain(hostname);
-        service.set_auth(Box::new(AuthProvider::new(server_url).await?));
+        service.set_auth(AuthProvider::new(server_url).await?);
 
         Ok(S3Server {
-            s3service: service,
+            s3service: service.build(),
             address: address.into(),
         })
     }

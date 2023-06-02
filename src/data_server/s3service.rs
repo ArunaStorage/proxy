@@ -22,12 +22,14 @@ use s3s::dto::*;
 use s3s::s3_error;
 use s3s::S3Error;
 use s3s::S3Request;
+use s3s::S3Response;
 use s3s::S3Result;
 use s3s::S3;
 use sha2::Sha256;
 use std::sync::Arc;
 
 use crate::backends::storage_backend::StorageBackend;
+use crate::data_server::cors;
 use crate::data_server::utils::buffered_s3_sink::BufferedS3Sink;
 
 use super::data_handler::DataHandler;
@@ -58,13 +60,25 @@ impl S3ServiceServer {
 #[async_trait::async_trait]
 impl S3 for S3ServiceServer {
     #[tracing::instrument]
-    async fn put_object(&self, req: S3Request<PutObjectInput>) -> S3Result<PutObjectOutput> {
-        if req.input.content_length == 0 {
-            return Err(s3_error!(
-                MissingContentLength,
-                "Missing or invalid (0) content-length"
-            ));
-        }
+    async fn put_object(
+        &self,
+        req: S3Request<PutObjectInput>,
+    ) -> S3Result<S3Response<PutObjectOutput>> {
+        // if req.input.content_length == 0 {
+        //     return Err(s3_error!(
+        //         MissingContentLength,
+        //         "Missing or invalid (0) content-length"
+        //     ));
+        // }
+        let content_length = match req.input.content_length {
+            Some(content_length) => content_length,
+            None => {
+                return Err(s3_error!(
+                    MissingContentLength,
+                    "Missing or invalid (0) content-length"
+                ));
+            }
+        };
 
         let mut anotif = ArunaNotifier::new(
             self.data_handler.internal_notifier_service.clone(),
@@ -72,7 +86,7 @@ impl S3 for S3ServiceServer {
         );
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, req.input.content_length)
+            .get_or_create_object(&req.input.bucket, &req.input.key, content_length)
             .await?;
         anotif.validate_hashes(req.input.content_md5, req.input.checksum_sha256)?;
         anotif.get_encryption_key().await?;
@@ -142,7 +156,7 @@ impl S3 for S3ServiceServer {
                     }
 
                     if location.is_compressed {
-                        if req.input.content_length > 5242880 + 80 * 28 {
+                        if content_length > 5242880 + 80 * 28 {
                             awr = awr.add_transformer(FooterGenerator::new(None, true))
                         }
                         awr = awr.add_transformer(ZstdEnc::new(0, true));
@@ -153,7 +167,7 @@ impl S3 for S3ServiceServer {
                         s3_error!(InternalError, "Internal data transformer processing error")
                     })?;
 
-                    if size_counter as i64 != req.input.content_length {
+                    if size_counter as i64 != content_length {
                         self.backend.delete_object(location).await.map_err(|e| {
                             log::error!(
                                 "PUT: Unable to delete object, after wrong content_len: {}",
@@ -235,7 +249,7 @@ impl S3 for S3ServiceServer {
                     object_id,
                     collection_id,
                     location: Some(location),
-                    content_length: req.input.content_length,
+                    content_length,
                     hashes: vec![
                         Hash {
                             alg: Hashalgorithm::Md5 as i32,
@@ -260,14 +274,14 @@ impl S3 for S3ServiceServer {
             checksum_sha256: Some(final_sha256),
             ..Default::default()
         };
-        Ok(output)
+        Ok(S3Response::new(output))
     }
 
     #[tracing::instrument]
     async fn create_multipart_upload(
         &self,
         req: S3Request<CreateMultipartUploadInput>,
-    ) -> S3Result<CreateMultipartUploadOutput> {
+    ) -> S3Result<S3Response<CreateMultipartUploadOutput>> {
         let mut anotif = ArunaNotifier::new(
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
@@ -293,22 +307,34 @@ impl S3 for S3ServiceServer {
                 s3_error!(InvalidArgument, "Unable to initialize multi-part")
             })?;
 
-        Ok(CreateMultipartUploadOutput {
+        Ok(S3Response::new(CreateMultipartUploadOutput {
             key: Some(req.input.key),
             bucket: Some(req.input.bucket),
             upload_id: Some(init_response),
             ..Default::default()
-        })
+        }))
     }
 
     #[tracing::instrument]
-    async fn upload_part(&self, req: S3Request<UploadPartInput>) -> S3Result<UploadPartOutput> {
-        if req.input.content_length == 0 {
-            return Err(s3_error!(
-                MissingContentLength,
-                "Missing or invalid (0) content-length"
-            ));
-        }
+    async fn upload_part(
+        &self,
+        req: S3Request<UploadPartInput>,
+    ) -> S3Result<S3Response<UploadPartOutput>> {
+        // if req.input.content_length == 0 {
+        //     return Err(s3_error!(
+        //         MissingContentLength,
+        //         "Missing or invalid (0) content-length"
+        //     ));
+        // }
+        let content_length = match req.input.content_length {
+            Some(content_length) => content_length,
+            None => {
+                return Err(s3_error!(
+                    MissingContentLength,
+                    "Missing or invalid (0) content-length"
+                ));
+            }
+        };
         let mut anotif = ArunaNotifier::new(
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
@@ -367,17 +393,17 @@ impl S3 for S3ServiceServer {
             _ => return Err(s3_error!(InvalidPart, "MultiPart cannot be empty")),
         };
 
-        Ok(UploadPartOutput {
+        Ok(S3Response::new(UploadPartOutput {
             e_tag: Some(format!("-{}", etag)),
             ..Default::default()
-        })
+        }))
     }
 
     #[tracing::instrument]
     async fn complete_multipart_upload(
         &self,
         req: S3Request<CompleteMultipartUploadInput>,
-    ) -> S3Result<CompleteMultipartUploadOutput> {
+    ) -> S3Result<S3Response<CompleteMultipartUploadOutput>> {
         let mut anotif = ArunaNotifier::new(
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
@@ -420,14 +446,17 @@ impl S3 for S3ServiceServer {
             )
             .await?;
 
-        Ok(CompleteMultipartUploadOutput {
+        Ok(S3Response::new(CompleteMultipartUploadOutput {
             e_tag: Some(object_id),
             version_id: Some(anotif.get_revision_string()?),
             ..Default::default()
-        })
+        }))
     }
 
-    async fn get_object(&self, req: S3Request<GetObjectInput>) -> S3Result<GetObjectOutput> {
+    async fn get_object(
+        &self,
+        req: S3Request<GetObjectInput>,
+    ) -> S3Result<S3Response<GetObjectOutput>> {
         // Get the credentials
         dbg!(req.credentials.clone());
         let creds = match req.credentials {
@@ -448,6 +477,7 @@ impl S3 for S3ServiceServer {
             .internal_notifier_service
             .clone()
             .get_object_location(GetObjectLocationRequest {
+                // Muss CORS-Header liefern
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
                 access_key: creds.access_key,
@@ -621,17 +651,51 @@ impl S3 for S3ServiceServer {
                 s3_error!(InternalError, "intenal processing error")
             })));
 
-        Ok(GetObjectOutput {
+        Ok(S3Response::new(GetObjectOutput {
             body,
             content_length: calc_content_len,
             last_modified: Some(timestamp),
+            // muss CORS-Header mitliefern
             e_tag: Some(format!("-{}", object.id)),
             version_id: Some(format!("{}", object.rev_number)),
             ..Default::default()
-        })
+        }))
     }
 
-    async fn head_object(&self, req: S3Request<HeadObjectInput>) -> S3Result<HeadObjectOutput> {
+    async fn put_bucket_cors(
+        &self,
+        req: S3Request<PutBucketCorsInput>,
+    ) -> S3Result<S3Response<PutBucketCorsOutput>> {
+        let cors: Vec<cors::CORS> = req
+            .input
+            .cors_configuration
+            .cors_rules
+            .into_iter()
+            .map(|x| x.into())
+            .collect();
+
+        let token = match req.credentials {
+            Some(cred) => todo!("Interner request: GetTokenFromSecret"),
+            None => {
+                log::error!("{}", "Not identified PutBucketCorsRequest");
+                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
+            }
+        };
+
+        Err(s3_error!(NotImplemented, "CORS not implemented"))
+    }
+
+    async fn get_bucket_cors(
+        &self,
+        req: S3Request<GetBucketCorsInput>,
+    ) -> S3Result<S3Response<GetBucketCorsOutput>> {
+        Err(s3_error!(NotImplemented, "CORS not implemented"))
+    }
+
+    async fn head_object(
+        &self,
+        req: S3Request<HeadObjectInput>,
+    ) -> S3Result<S3Response<HeadObjectOutput>> {
         // Get the credentials
 
         let creds = match req.credentials {
@@ -652,6 +716,7 @@ impl S3 for S3ServiceServer {
             .internal_notifier_service
             .clone()
             .get_object_location(GetObjectLocationRequest {
+                // Soll auch die CORS header mitliefern aus der Collection
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
                 access_key: creds.access_key,
@@ -687,17 +752,20 @@ impl S3 for S3ServiceServer {
             .ok_or_else(|| s3_error!(InternalError, "intenal processing error"))?
             .map_err(|_| s3_error!(InternalError, "intenal processing error"))?;
 
-        Ok(HeadObjectOutput {
+        Ok(S3Response::new(HeadObjectOutput {
             content_length: object.content_len,
             last_modified: Some(timestamp),
             checksum_sha256: Some(sha256_hash.hash),
             e_tag: Some(object.id),
             version_id: Some(format!("{}", object.rev_number)),
             ..Default::default()
-        })
+        }))
     }
 
-    async fn list_objects(&self, _req: S3Request<ListObjectsInput>) -> S3Result<ListObjectsOutput> {
+    async fn list_objects(
+        &self,
+        _req: S3Request<ListObjectsInput>,
+    ) -> S3Result<S3Response<ListObjectsOutput>> {
         Err(s3_error!(
             NotImplemented,
             "ListObjects is not implemented yet"
@@ -707,7 +775,7 @@ impl S3 for S3ServiceServer {
     async fn create_bucket(
         &self,
         _req: S3Request<CreateBucketInput>,
-    ) -> S3Result<CreateBucketOutput> {
+    ) -> S3Result<S3Response<CreateBucketOutput>> {
         Err(s3_error!(
             NotImplemented,
             "CreateBucket is not implemented yet"
