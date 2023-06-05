@@ -1,16 +1,15 @@
-use aruna_rust_api::aruna::aruna::api::storage::services::v1::collection_service_client;
-use tonic::codegen::InterceptedService;
+use s3s::s3_error;
 use tonic::metadata::AsciiMetadataKey;
 use tonic::metadata::AsciiMetadataValue;
+use tonic::transport::Endpoint;
 use tonic::transport::{Channel, ClientTlsConfig};
 
 const API_TOKEN_ENTRY_KEY: &str = "Authorization";
 
 #[derive(Clone)]
 pub struct UserClient {
-    pub collection_service: collection_service_client::CollectionServiceClient<
-        InterceptedService<Channel, ClientInterceptor>,
-    >,
+    pub interceptor: ClientInterceptor,
+    pub endpoint: Endpoint,
 }
 
 #[derive(Clone)]
@@ -19,23 +18,17 @@ pub struct ClientInterceptor {
 }
 
 impl UserClient {
-    pub async fn new(endpoint: String, api_token: String) -> Self {
+    pub async fn new(endpoint: String, api_token: String) -> Result<Self, s3s::S3Error> {
         let interceptor = ClientInterceptor { api_token };
         let tls_config = ClientTlsConfig::new();
         let endpoint = Channel::from_shared(endpoint)
-            .unwrap()
+            .map_err(|_| s3_error!(NotSignedUp, "Unable to authenticate user"))?
             .tls_config(tls_config)
-            .unwrap();
-        let channel = endpoint.connect().await.unwrap();
-        let client = UserClient {
-            collection_service:
-                collection_service_client::CollectionServiceClient::with_interceptor(
-                    channel.clone(),
-                    interceptor.clone(),
-                ),
-        };
-
-        return client;
+            .map_err(|_| s3_error!(NotSignedUp, "Unable to authenticate user"))?;
+        Ok(UserClient {
+            interceptor,
+            endpoint,
+        })
     }
 }
 

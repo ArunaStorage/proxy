@@ -23,6 +23,7 @@ use aruna_rust_api::api::internal::v1::PartETag;
 use aruna_rust_api::api::storage::models::v1::Hash;
 use aruna_rust_api::api::storage::models::v1::Hashalgorithm;
 use aruna_rust_api::api::storage::models::v1::KeyValue;
+use aruna_rust_api::api::storage::services::v1::collection_service_client;
 use aruna_rust_api::api::storage::services::v1::UpdateCollectionRequest;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -74,8 +75,8 @@ impl S3 for S3ServiceServer {
         req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
         let content_length = match req.input.content_length {
-            Some(content_length) => content_length,
-            None => {
+            Some(content_length) if content_length > 0 => content_length,
+            _ => {
                 return Err(s3_error!(
                     MissingContentLength,
                     "Missing or invalid (0) content-length"
@@ -691,13 +692,19 @@ impl S3 for S3ServiceServer {
         {
             Ok(response) => response.into_inner().token,
             Err(err) => {
-                log::error!("{}", "Not identified PutBucketCorsRequest");
+                log::error!("{}", err);
                 return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
             }
         };
         let cors: cors::CORSVec = req.input.cors_configuration.cors_rules.into();
-        let mut user_client = user_client::UserClient::new(self.aruna_url.clone(), token).await;
-        let collection = self
+        let user_client = match user_client::UserClient::new(self.aruna_url.clone(), token).await {
+            Ok(user_client) => user_client,
+            Err(err) => {
+                log::error!("{}", err);
+                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
+            }
+        };
+        let collection = match self
             .data_handler
             .internal_notifier_service
             .clone()
@@ -706,22 +713,50 @@ impl S3 for S3ServiceServer {
                 access_key: credentials.access_key,
             })
             .await
-            .unwrap()
-            .into_inner();
-        match user_client
-            .collection_service
+        {
+            Ok(collection) => collection.into_inner(),
+            Err(err) => {
+                log::error!("{}", err);
+                return Err(s3_error!(NoSuchBucket, "Bucket not found"));
+            }
+        };
+        let channel = match user_client.endpoint.connect().await {
+            Ok(channel) => channel,
+            Err(err) => {
+                log::error!("{}", err);
+                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
+            }
+        };
+        let mut client = collection_service_client::CollectionServiceClient::with_interceptor(
+            channel,
+            user_client.interceptor,
+        );
+
+        match client
             .update_collection(UpdateCollectionRequest {
                 collection_id: collection.collection_id,
                 labels: vec![KeyValue {
                     key: "apps.aruna-storage.org/cors".to_string(),
-                    value: serde_json::to_string(&cors).unwrap(),
+                    value: match serde_json::to_string(&cors) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            log::error!("{}", err);
+                            return Err(s3_error!(
+                                InvalidArgument,
+                                "Invalid CORS headers provided"
+                            ));
+                        }
+                    },
                 }],
                 ..Default::default()
             })
             .await
         {
-            Ok(response) => Ok(S3Response::new(PutBucketCorsOutput {})),
-            Err(err) => Err(s3_error!(NotSignedUp, "Your Account is not signed up")),
+            Ok(_response) => Ok(S3Response::new(PutBucketCorsOutput {})),
+            Err(err) => {
+                log::error!("{}", err);
+                Err(s3_error!(NotSignedUp, "Your Account is not signed up"))
+            }
         }
     }
 
