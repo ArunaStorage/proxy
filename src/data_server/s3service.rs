@@ -678,7 +678,7 @@ impl S3 for S3ServiceServer {
             .await
             .map_err(|e| {
                 log::error!("{}", e);
-                s3_error!(NotSignedUp, "Your account is not signed up")
+                s3_error!(InternalError, "Unable to connect to ArunaServer")
             })?;
 
         let credentials = req
@@ -705,7 +705,7 @@ impl S3 for S3ServiceServer {
             .await
             .map_err(|e| {
                 log::error!("{}", e);
-                s3_error!(NotSignedUp, "Unable to connect to endpoint")
+                s3_error!(InternalError, "Unable to connect to endpoint")
             })?;
 
         let collection = self
