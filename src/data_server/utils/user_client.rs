@@ -22,9 +22,9 @@ impl UserClient {
         let interceptor = ClientInterceptor { api_token };
         let tls_config = ClientTlsConfig::new();
         let endpoint = Channel::from_shared(endpoint)
-            .map_err(|_| s3_error!(NotSignedUp, "Unable to authenticate user"))?
+            .map_err(|_| s3_error!(InternalError, "Unable to connect to endpoint"))?
             .tls_config(tls_config)
-            .map_err(|_| s3_error!(NotSignedUp, "Unable to authenticate user"))?;
+            .map_err(|_| s3_error!(InternalError, "Unable to connect to endpoint"))?;
         Ok(UserClient {
             interceptor,
             endpoint,

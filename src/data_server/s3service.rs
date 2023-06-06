@@ -325,7 +325,9 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<UploadPartInput>,
     ) -> S3Result<S3Response<UploadPartOutput>> {
-        let content_length = match req.input.content_length {
+        // Why?
+        // let content_length =
+        match req.input.content_length {
             Some(content_length) => content_length,
             None => {
                 return Err(s3_error!(
@@ -645,8 +647,8 @@ impl S3 for S3ServiceServer {
                     format!("{}", e.seconds).as_str(),
                 )
             })
-            .ok_or_else(|| s3_error!(InternalError, "intenal processing error"))?
-            .map_err(|_| s3_error!(InternalError, "intenal processing error"))?;
+            .ok_or_else(|| s3_error!(InternalError, "internal processing error"))?
+            .map_err(|_| s3_error!(InternalError, "internal processing error"))?;
 
         let body =
             Some(StreamingBlob::wrap(final_receiver.map_err(|_| {
@@ -672,24 +674,18 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<PutBucketCorsInput>,
     ) -> S3Result<S3Response<PutBucketCorsOutput>> {
-        let mut auth_client =
-            match InternalAuthorizeServiceClient::connect(self.aruna_url.clone()).await {
-                Ok(client) => client,
-                Err(err) => {
-                    log::error!("{}", err);
-                    // This is an internal connection error (?)
-                    return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-                }
-            };
+        let mut auth_client = InternalAuthorizeServiceClient::connect(self.aruna_url.clone())
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NotSignedUp, "Your account is not signed up")
+            })?;
 
-        let credentials = match req.credentials {
-            Some(cred) => cred,
-            None => {
-                log::error!("{}", "Not identified PutBucketCorsRequest");
-                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            }
-        };
-        let token = match auth_client
+        let credentials = req
+            .credentials
+            .ok_or_else(|| s3_error!(NotSignedUp, "Your account is not signed up"))?;
+
+        let token = auth_client
             .get_token_from_secret(GetTokenFromSecretRequest {
                 authorization: Some(Authorization {
                     secretkey: credentials.secret_key.expose().to_string(),
@@ -697,22 +693,22 @@ impl S3 for S3ServiceServer {
                 }),
             })
             .await
-        {
-            Ok(response) => response.into_inner().token,
-            Err(err) => {
-                log::error!("{}", err);
-                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            }
-        };
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NotSignedUp, "Your account is not signed up")
+            })?
+            .into_inner()
+            .token;
+
         let cors: CORSVec = req.input.cors_configuration.cors_rules.into();
-        let user_client = match user_client::UserClient::new(self.aruna_url.clone(), token).await {
-            Ok(user_client) => user_client,
-            Err(err) => {
-                log::error!("{}", err);
-                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            }
-        };
-        let collection = match self
+        let user_client = user_client::UserClient::new(self.aruna_url.clone(), token)
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NotSignedUp, "Unable to connect to endpoint")
+            })?;
+
+        let collection = self
             .data_handler
             .internal_notifier_service
             .clone()
@@ -721,20 +717,16 @@ impl S3 for S3ServiceServer {
                 access_key: credentials.access_key,
             })
             .await
-        {
-            Ok(collection) => collection.into_inner(),
-            Err(err) => {
-                log::error!("{}", err);
-                return Err(s3_error!(NoSuchBucket, "Bucket not found"));
-            }
-        };
-        let channel = match user_client.endpoint.connect().await {
-            Ok(channel) => channel,
-            Err(err) => {
-                log::error!("{}", err);
-                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            }
-        };
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NoSuchBucket, "Bucket not found")
+            })?
+            .into_inner();
+
+        let channel = user_client.endpoint.connect().await.map_err(|e| {
+            log::error!("{}", e);
+            s3_error!(InternalError, "Unable to connect to endpoint")
+        })?;
         let mut client = collection_service_client::CollectionServiceClient::with_interceptor(
             channel,
             user_client.interceptor,
@@ -763,14 +755,17 @@ impl S3 for S3ServiceServer {
             Ok(_response) => Ok(S3Response::new(PutBucketCorsOutput {})),
             Err(err) => {
                 log::error!("{}", err);
-                Err(s3_error!(NotSignedUp, "Your Account is not signed up"))
+                Err(s3_error!(
+                    InternalError,
+                    "Internal error while updating CORS headers"
+                ))
             }
         }
     }
 
     async fn get_bucket_cors(
         &self,
-        req: S3Request<GetBucketCorsInput>,
+        _req: S3Request<GetBucketCorsInput>,
     ) -> S3Result<S3Response<GetBucketCorsOutput>> {
         Err(s3_error!(NotImplemented, "CORS not implemented"))
     }
@@ -832,8 +827,8 @@ impl S3 for S3ServiceServer {
                     format!("{}", e.seconds).as_str(),
                 )
             })
-            .ok_or_else(|| s3_error!(InternalError, "intenal processing error"))?
-            .map_err(|_| s3_error!(InternalError, "intenal processing error"))?;
+            .ok_or_else(|| s3_error!(InternalError, "internal processing error"))?
+            .map_err(|_| s3_error!(InternalError, "internal processing error"))?;
 
         Ok(S3Response::new(HeadObjectOutput {
             content_length: object.content_len,
