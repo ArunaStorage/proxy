@@ -1,5 +1,5 @@
 use crate::backends::storage_backend::StorageBackend;
-use crate::data_server::cors;
+use crate::data_server::cors::*;
 use crate::data_server::utils::buffered_s3_sink::BufferedS3Sink;
 use anyhow::Result;
 use aruna_file::helpers::footer_parser::FooterParser;
@@ -27,6 +27,7 @@ use aruna_rust_api::api::storage::services::v1::collection_service_client;
 use aruna_rust_api::api::storage::services::v1::UpdateCollectionRequest;
 use futures::StreamExt;
 use futures::TryStreamExt;
+use http::HeaderMap;
 use md5::{Digest, Md5};
 use s3s::dto::*;
 use s3s::s3_error;
@@ -475,7 +476,6 @@ impl S3 for S3ServiceServer {
             .internal_notifier_service
             .clone()
             .get_object_location(GetObjectLocationRequest {
-                // Needs to insert CORS-Headers
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
                 access_key: creds.access_key,
@@ -484,6 +484,10 @@ impl S3 for S3ServiceServer {
             .await
             .map_err(|_| s3_error!(NoSuchKey, "Key not found, getlocation"))?
             .into_inner();
+
+        let cors: CORSVec = get_location_response.cors_configurations.into();
+
+        let headers: Result<HeaderMap, S3Error> = cors.into();
 
         let _location = get_location_response
             .location
@@ -646,18 +650,22 @@ impl S3 for S3ServiceServer {
 
         let body =
             Some(StreamingBlob::wrap(final_receiver.map_err(|_| {
-                s3_error!(InternalError, "intenal processing error")
+                s3_error!(InternalError, "internal processing error")
             })));
 
-        Ok(S3Response::new(GetObjectOutput {
+        let mut response = S3Response::new(GetObjectOutput {
             body,
             content_length: calc_content_len,
             last_modified: Some(timestamp),
-            // muss CORS-Header mitliefern
             e_tag: Some(format!("-{}", object.id)),
             version_id: Some(format!("{}", object.rev_number)),
             ..Default::default()
-        }))
+        });
+
+        response.headers =
+            headers.map_err(|_| s3_error!(InternalError, "Internal parsing error"))?;
+
+        Ok(response)
     }
 
     async fn put_bucket_cors(
@@ -696,7 +704,7 @@ impl S3 for S3ServiceServer {
                 return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
             }
         };
-        let cors: cors::CORSVec = req.input.cors_configuration.cors_rules.into();
+        let cors: CORSVec = req.input.cors_configuration.cors_rules.into();
         let user_client = match user_client::UserClient::new(self.aruna_url.clone(), token).await {
             Ok(user_client) => user_client,
             Err(err) => {
