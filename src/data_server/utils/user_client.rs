@@ -21,10 +21,20 @@ impl UserClient {
     pub async fn new(endpoint: String, api_token: String) -> Result<Self, s3s::S3Error> {
         let interceptor = ClientInterceptor { api_token };
         let tls_config = ClientTlsConfig::new();
-        let endpoint = Channel::from_shared(endpoint)
-            .map_err(|_| s3_error!(InternalError, "Unable to connect to endpoint"))?
-            .tls_config(tls_config)
-            .map_err(|_| s3_error!(InternalError, "Unable to connect to endpoint"))?;
+        let endpoint = if endpoint.starts_with("http://") {
+            tonic::transport::Endpoint::try_from(endpoint)
+                .map_err(|_| s3_error!(InternalError, "Unable to connect to endpoint"))?
+        } else if endpoint.starts_with("https://") {
+            Channel::from_shared(endpoint)
+                .map_err(|e| {
+                    log::error!("{}", e);
+                    s3_error!(InternalError, "Unable to connect to endpoint")
+                })?
+                .tls_config(tls_config)
+                .map_err(|_| s3_error!(InternalError, "Unable to connect to endpoint"))?
+        } else {
+            return Err(s3_error!(InternalError, "Unable to connect to endpoint"));
+        };
         Ok(UserClient {
             interceptor,
             endpoint,

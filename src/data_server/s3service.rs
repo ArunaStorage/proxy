@@ -24,6 +24,7 @@ use aruna_rust_api::api::storage::models::v1::Hash;
 use aruna_rust_api::api::storage::models::v1::Hashalgorithm;
 use aruna_rust_api::api::storage::models::v1::KeyValue;
 use aruna_rust_api::api::storage::services::v1::collection_service_client;
+use aruna_rust_api::api::storage::services::v1::GetCollectionByIdRequest;
 use aruna_rust_api::api::storage::services::v1::UpdateCollectionRequest;
 use futures::StreamExt;
 use futures::TryStreamExt;
@@ -51,19 +52,22 @@ use crate::data_server::utils::utils::create_location_from_hash;
 pub struct S3ServiceServer {
     backend: Arc<Box<dyn StorageBackend>>,
     data_handler: Arc<DataHandler>,
-    aruna_url: String,
+    aruna_external: String,
+    aruna_internal: String,
 }
 
 impl S3ServiceServer {
     pub async fn new(
         backend: Arc<Box<dyn StorageBackend>>,
         data_handler: Arc<DataHandler>,
-        aruna_url: String,
+        aruna_external: String,
+        aruna_internal: String,
     ) -> Result<Self> {
         Ok(S3ServiceServer {
             backend: backend.clone(),
             data_handler,
-            aruna_url,
+            aruna_external,
+            aruna_internal,
         })
     }
 }
@@ -674,7 +678,7 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<PutBucketCorsInput>,
     ) -> S3Result<S3Response<PutBucketCorsOutput>> {
-        let mut auth_client = InternalAuthorizeServiceClient::connect(self.aruna_url.clone())
+        let mut auth_client = InternalAuthorizeServiceClient::connect(self.aruna_internal.clone())
             .await
             .map_err(|e| {
                 log::error!("{}", e);
@@ -701,7 +705,16 @@ impl S3 for S3ServiceServer {
             .token;
 
         let cors: CORSVec = req.input.cors_configuration.cors_rules.into();
-        let user_client = user_client::UserClient::new(self.aruna_url.clone(), token)
+
+        let mut cors: Vec<KeyValue> = match cors.into() {
+            Ok(cors) => cors,
+            Err(e) => {
+                log::debug!("{}", e);
+                return Err(s3_error!(InternalError, "Error while parsing CORS headers"));
+            }
+        };
+
+        let user_client = user_client::UserClient::new(self.aruna_external.clone(), token)
             .await
             .map_err(|e| {
                 log::error!("{}", e);
@@ -732,22 +745,35 @@ impl S3 for S3ServiceServer {
             user_client.interceptor,
         );
 
+        let mut collection = match client
+            .get_collection_by_id(GetCollectionByIdRequest {
+                collection_id: collection.collection_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(InternalError, "Unable to query collection info")
+            })?
+            .into_inner()
+            .collection
+        {
+            Some(c) => c,
+            None => {
+                return Err(s3_error!(InternalError, "Unable to query collection info"));
+            }
+        };
+
+        cors.append(&mut collection.labels);
         match client
             .update_collection(UpdateCollectionRequest {
-                collection_id: collection.collection_id,
-                labels: vec![KeyValue {
-                    key: "apps.aruna-storage.org/cors".to_string(),
-                    value: match serde_json::to_string(&cors) {
-                        Ok(value) => value,
-                        Err(err) => {
-                            log::error!("{}", err);
-                            return Err(s3_error!(
-                                InvalidArgument,
-                                "Invalid CORS headers provided"
-                            ));
-                        }
-                    },
-                }],
+                collection_id: collection.id,
+                // This needs to be changed, but querying a collection would introduce an
+                // additional unwanted request. Maybe we need a add_label_to_collection method?
+                name: collection.name,
+                labels: cors,
+                description: collection.description,
+                hooks: collection.hooks,
+                label_ontology: collection.label_ontology,
                 ..Default::default()
             })
             .await
@@ -765,9 +791,87 @@ impl S3 for S3ServiceServer {
 
     async fn get_bucket_cors(
         &self,
-        _req: S3Request<GetBucketCorsInput>,
+        req: S3Request<GetBucketCorsInput>,
     ) -> S3Result<S3Response<GetBucketCorsOutput>> {
-        Err(s3_error!(NotImplemented, "CORS not implemented"))
+        let mut auth_client = InternalAuthorizeServiceClient::connect(self.aruna_internal.clone())
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(InternalError, "Unable to connect to ArunaServer")
+            })?;
+
+        let credentials = req
+            .credentials
+            .ok_or_else(|| s3_error!(NotSignedUp, "Your account is not signed up"))?;
+
+        let token = auth_client
+            .get_token_from_secret(GetTokenFromSecretRequest {
+                authorization: Some(Authorization {
+                    secretkey: credentials.secret_key.expose().to_string(),
+                    accesskey: credentials.access_key.clone(),
+                }),
+            })
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NotSignedUp, "Your account is not signed up")
+            })?
+            .into_inner()
+            .token;
+
+        let user_client = user_client::UserClient::new(self.aruna_external.clone(), token)
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(InternalError, "Unable to connect to endpoint")
+            })?;
+
+        let collection = self
+            .data_handler
+            .internal_notifier_service
+            .clone()
+            .get_collection_by_bucket(GetCollectionByBucketRequest {
+                bucket: req.input.bucket,
+                access_key: credentials.access_key,
+            })
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NoSuchBucket, "Bucket not found")
+            })?
+            .into_inner();
+
+        let channel = user_client.endpoint.connect().await.map_err(|e| {
+            log::error!("{}", e);
+            s3_error!(InternalError, "Unable to connect to endpoint")
+        })?;
+        let mut client = collection_service_client::CollectionServiceClient::with_interceptor(
+            channel,
+            user_client.interceptor,
+        );
+
+        let cors: Option<CORSVec> = match client
+            .get_collection_by_id(GetCollectionByIdRequest {
+                collection_id: collection.collection_id.clone(),
+            })
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(InternalError, "Unable to query collection info")
+            })?
+            .into_inner()
+            .collection
+        {
+            Some(c) => Some(c.labels.into()),
+            None => None,
+        };
+
+        let cors: Option<Vec<CORSRule>> = match cors {
+            Some(c) => Some(c.into()),
+            None => None,
+        };
+
+        Ok(S3Response::new(GetBucketCorsOutput { cors_rules: cors }))
     }
 
     async fn head_object(

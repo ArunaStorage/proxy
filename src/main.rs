@@ -23,6 +23,8 @@ async fn main() {
     let proxy_data_host = dotenv::var("PROXY_DATA_HOST").unwrap();
     // ULID of the endpoint
     let endpoint_id = dotenv::var("ENDPOINT_ID").unwrap();
+    // External Aruna Backend
+    let aruna_api = dotenv::var("EXTERNAL_ARUNA_API").unwrap();
     // Aruna Backend
     let backend_host = dotenv::var("BACKEND_HOST").unwrap();
     // Internal backchannel Aruna -> Dproxy
@@ -69,6 +71,7 @@ async fn main() {
         &proxy_data_host,
         hostname,
         backend_host,
+        aruna_api,
         storage_backend.clone(),
         data_handler.clone(),
     )
