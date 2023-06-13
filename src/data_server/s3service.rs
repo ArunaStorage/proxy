@@ -93,9 +93,28 @@ impl S3 for S3ServiceServer {
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
         );
+
+        let content_type = KeyValue {
+            key: "apps.aruna-storage/content-type".to_string(),
+            value: match req.input.content_type {
+                Some(c) => c.to_string(),
+                None => "Content-Type: application/octet-stream".to_string(),
+            },
+        };
+        let content_disposition = KeyValue {
+            key: "apps.aruna-storage.org/content-disposition".to_string(),
+            value: match req.input.content_disposition {
+                Some(c) => c,
+                None => ["Content-Disposition: attachment; filename=", &req.input.key]
+                    .join("")
+                    .to_string(),
+            },
+        };
+        let labels = Some(vec![content_type, content_disposition]);
+
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, content_length)
+            .get_or_create_object(&req.input.bucket, &req.input.key, content_length, labels)
             .await?;
         anotif.validate_hashes(req.input.content_md5, req.input.checksum_sha256)?;
         anotif.get_encryption_key().await?;
@@ -295,9 +314,27 @@ impl S3 for S3ServiceServer {
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
         );
+
+        let content_type = KeyValue {
+            key: "apps.aruna-storage/content-type".to_string(),
+            value: match req.input.content_type {
+                Some(c) => c.to_string(),
+                None => "Content-Type: application/octet-stream".to_string(),
+            },
+        };
+        let content_disposition = KeyValue {
+            key: "apps.aruna-storage.org/content-disposition".to_string(),
+            value: match req.input.content_disposition {
+                Some(c) => c,
+                None => ["Content-Disposition: attachment; filename=", &req.input.key]
+                    .join("")
+                    .to_string(),
+            },
+        };
+        let labels = Some(vec![content_type, content_disposition]);
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, 0)
+            .get_or_create_object(&req.input.bucket, &req.input.key, 0, labels)
             .await?;
 
         let (object_id, collection_id) = anotif.get_col_obj()?;
@@ -346,7 +383,7 @@ impl S3 for S3ServiceServer {
         );
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, 0)
+            .get_or_create_object(&req.input.bucket, &req.input.key, 0, None)
             .await?;
 
         anotif.get_encryption_key().await?;
@@ -415,7 +452,7 @@ impl S3 for S3ServiceServer {
         );
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, 0)
+            .get_or_create_object(&req.input.bucket, &req.input.key, 0, None)
             .await?;
 
         let parts = match req.input.multipart_upload {
