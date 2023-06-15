@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use aruna_rust_api::api::internal::v1::CorsConfig;
 use aruna_rust_api::api::storage::models::v1::KeyValue;
 use http::{
@@ -6,6 +8,7 @@ use http::{
     },
     HeaderMap, HeaderValue,
 };
+use mime::Mime;
 use s3s::{dto::CORSRule, s3_error};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +22,37 @@ pub struct CORS {
     pub methods: Vec<String>,
     pub origins: Vec<String>,
     pub headers: Vec<String>,
+}
+
+pub struct ContentHeaders {
+    pub content_type: Option<Mime>,
+    pub content_disposition: Option<String>,
+}
+
+impl From<Vec<KeyValue>> for ContentHeaders {
+    fn from(labels: Vec<KeyValue>) -> ContentHeaders {
+        let content_type: Vec<KeyValue> = labels
+            .clone()
+            .into_iter()
+            .filter(|label| label.key == "apps.aruna-storage.org/content-type".to_string())
+            .collect();
+        let content_type = match content_type.get(0) {
+            Some(label) => mime::Mime::from_str(&label.value).ok(),
+            None => Some(mime::APPLICATION_OCTET_STREAM),
+        };
+        let content_disposition: Vec<KeyValue> = labels
+            .into_iter()
+            .filter(|label| label.key == "apps.aruna-storage.org/content-disposition".to_string())
+            .collect();
+        let content_disposition = match content_disposition.get(0) {
+            Some(label) => Some(label.value.clone()),
+            None => None,
+        };
+        ContentHeaders {
+            content_type,
+            content_disposition,
+        }
+    }
 }
 
 impl From<CORSRule> for CORS {
