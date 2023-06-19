@@ -538,21 +538,21 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
-        // Get the credentials
-        dbg!(req.credentials.clone());
-        let creds = match req.credentials {
-            Some(cred) => cred,
-            None => {
-                log::error!("{}", "Not identified PutObjectRequest");
-                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            }
-        };
-
         let rev_id = match req.input.version_id {
             Some(a) => a,
             None => String::new(),
         };
 
+        // Get the credentials
+        dbg!(req.credentials.clone());
+        let access_key = match req.credentials {
+            Some(cred) => cred.access_key,
+            None => "".to_string(),
+            // {
+            //     log::error!("{}", "Not identified PutObjectRequest");
+            //     return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
+            // }
+        };
         let get_location_response = self
             .data_handler
             .internal_notifier_service
@@ -560,7 +560,7 @@ impl S3 for S3ServiceServer {
             .get_object_location(GetObjectLocationRequest {
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
-                access_key: creds.access_key,
+                access_key,
                 endpoint_id: self.data_handler.settings.endpoint_id.to_string(),
             })
             .await
