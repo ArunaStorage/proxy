@@ -543,15 +543,9 @@ impl S3 for S3ServiceServer {
             None => String::new(),
         };
 
-        // Get the credentials
-        dbg!(req.credentials.clone());
         let access_key = match req.credentials {
             Some(cred) => cred.access_key,
-            None => "".to_string(),
-            // {
-            //     log::error!("{}", "Not identified PutObjectRequest");
-            //     return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            // }
+            None => String::new(),
         };
         let get_location_response = self
             .data_handler
@@ -836,6 +830,9 @@ impl S3 for S3ServiceServer {
             user_client.interceptor,
         );
 
+        // This needs to be changed, but querying a collection would introduce an
+        // additional unwanted request. Maybe we need add_label_to_collection() instead of
+        // update_collection()
         let mut collection = match client
             .get_collection_by_id(GetCollectionByIdRequest {
                 collection_id: collection.collection_id.clone(),
@@ -858,8 +855,6 @@ impl S3 for S3ServiceServer {
         match client
             .update_collection(UpdateCollectionRequest {
                 collection_id: collection.id,
-                // This needs to be changed, but querying a collection would introduce an
-                // additional unwanted request. Maybe we need a add_label_to_collection method?
                 name: collection.name,
                 labels: cors,
                 description: collection.description,

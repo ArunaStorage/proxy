@@ -35,7 +35,7 @@ mime = "0.3"
 rand = "0.8.5"
 reqwest = "0.11.14"
 rusty_ulid = "2.0.0"
-s3s = "0.6.0"
+s3s = { git= "https://github.com/Nugine/s3s.git", version = "0.6.1-dev"}
 serde = {version = "1.0.152", features = ["derive"]}
 serde_json = "1"
 sha2 = {version = "0.10.6", features = ["std", "asm", "sha2-asm"]}

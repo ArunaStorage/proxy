@@ -3,7 +3,7 @@ use aruna_rust_api::api::internal::v1::{
     internal_authorize_service_client::InternalAuthorizeServiceClient, GetSecretRequest,
 };
 use s3s::{
-    auth::{S3Auth, SecretKey},
+    auth::{Credentials, S3Auth, S3AuthContext, SecretKey},
     s3_error, S3Result,
 };
 use tonic::Request;
@@ -38,5 +38,12 @@ impl S3Auth for AuthProvider {
             .ok_or_else(|| s3_error!(NotSignedUp, "Unable to authenticate user"))?
             .secretkey;
         Ok(secret.into())
+    }
+    async fn check_access(&self, cx: &mut S3AuthContext<'_>) -> S3Result<()> {
+        match (cx.credentials(), cx.method()) {
+            (Some(_), _) => Ok(()),
+            (None, &http::Method::GET) => Ok(()),
+            _ => Err(s3_error!(AccessDenied, "Custom Debug Error")),
+        }
     }
 }
