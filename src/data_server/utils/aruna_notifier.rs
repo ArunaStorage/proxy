@@ -1,7 +1,10 @@
-use aruna_rust_api::api::internal::v1::{
-    internal_proxy_notifier_service_client::InternalProxyNotifierServiceClient,
-    GetOrCreateEncryptionKeyRequest, GetOrCreateObjectByPathRequest,
-    GetOrCreateObjectByPathResponse, Location,
+use aruna_rust_api::api::{
+    internal::v1::{
+        internal_proxy_notifier_service_client::InternalProxyNotifierServiceClient,
+        GetOrCreateEncryptionKeyRequest, GetOrCreateObjectByPathRequest,
+        GetOrCreateObjectByPathResponse, Location,
+    },
+    storage::models::v1::KeyValue,
 };
 use s3s::{
     auth::{Credentials, SecretKey},
@@ -70,6 +73,7 @@ impl ArunaNotifier {
         bucket: &str,
         key: &str,
         content_len: i64,
+        header_option: Option<Vec<KeyValue>>,
     ) -> Result<(), S3Error> {
         self.path = Some(construct_path(bucket, key));
 
@@ -79,7 +83,7 @@ impl ArunaNotifier {
                 .clone()
                 .ok_or_else(|| s3_error!(InternalError, "Path not found"))?,
             access_key: self.credentials.access_key.to_string(),
-            object: Some(create_stage_object(key, content_len)),
+            object: Some(create_stage_object(key, content_len, header_option)),
             get_only: false,
             endpoint_id: self.settings.endpoint_id.to_string(),
         };

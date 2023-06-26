@@ -4,7 +4,10 @@ use aruna_rust_api::api::storage::models::v1::Hash;
 use aruna_rust_api::api::storage::models::v1::Hashalgorithm;
 use aruna_rust_api::api::{
     internal::v1::Location,
-    storage::{models::v1::DataClass, services::v1::StageObject},
+    storage::{
+        models::v1::{DataClass, KeyValue},
+        services::v1::StageObject,
+    },
 };
 use s3s::s3_error;
 use s3s::S3Error;
@@ -13,14 +16,22 @@ pub fn construct_path(bucket: &str, key: &str) -> String {
     format!("s3://{bucket}/{key}")
 }
 
-pub fn create_stage_object(key: &str, content_len: i64) -> StageObject {
+pub fn create_stage_object(
+    key: &str,
+    content_len: i64,
+    header_option: Option<Vec<KeyValue>>,
+) -> StageObject {
     let (fname, sub_path) = extract_filename_path(key);
+    let labels = match header_option {
+        Some(h) => h,
+        None => Vec::new(),
+    };
     StageObject {
         filename: fname,
         content_len,
         source: None,
         dataclass: DataClass::Private as i32,
-        labels: Vec::new(),
+        labels,
         hooks: Vec::new(),
         sub_path,
     }

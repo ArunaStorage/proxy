@@ -95,9 +95,48 @@ impl S3 for S3ServiceServer {
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
         );
+
+        let content_type = match req.input.content_type {
+            Some(content_type) => {
+                if content_type == mime::APPLICATION_OCTET_STREAM {
+                    None
+                } else {
+                    Some(KeyValue {
+                        key: "apps.aruna-storage.org/content-type".to_string(),
+                        value: content_type.to_string(),
+                    })
+                }
+            }
+            None => None,
+        };
+        log::debug!("Content_type: {:?}", content_type);
+        let content_disposition = match req.input.content_disposition {
+            Some(content_disposition) => {
+                if content_disposition.contains(&["attachment; filename=", &req.input.key].join(""))
+                {
+                    None
+                } else {
+                    Some(KeyValue {
+                        key: "apps.aruna-storage.org/content-disposition".to_string(),
+                        value: content_disposition.to_string(),
+                    })
+                }
+            }
+
+            None => None,
+        };
+        log::debug!("Content_disposition: {:?}", content_disposition);
+
+        let labels = match (content_type, content_disposition) {
+            (Some(ct), Some(cd)) => Some(vec![ct, cd]),
+            (Some(ct), None) => Some(vec![ct]),
+            (None, Some(cd)) => Some(vec![cd]),
+            (None, None) => None,
+        };
+
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, content_length)
+            .get_or_create_object(&req.input.bucket, &req.input.key, content_length, labels)
             .await?;
         anotif.validate_hashes(req.input.content_md5, req.input.checksum_sha256)?;
         anotif.get_encryption_key().await?;
@@ -297,9 +336,46 @@ impl S3 for S3ServiceServer {
             self.data_handler.internal_notifier_service.clone(),
             self.data_handler.settings.clone(),
         );
+
+        let content_type = match req.input.content_type {
+            Some(content_type) => {
+                if content_type == mime::APPLICATION_OCTET_STREAM {
+                    None
+                } else {
+                    Some(KeyValue {
+                        key: "apps.aruna-storage.org/content-type".to_string(),
+                        value: content_type.to_string(),
+                    })
+                }
+            }
+            None => None,
+        };
+        let content_disposition = match req.input.content_disposition {
+            Some(content_disposition) => {
+                if content_disposition.contains(&["attachment; filename=", &req.input.key].join(""))
+                {
+                    None
+                } else {
+                    Some(KeyValue {
+                        key: "apps.aruna-storage.org/content-disposition".to_string(),
+                        value: content_disposition.to_string(),
+                    })
+                }
+            }
+
+            None => None,
+        };
+
+        let labels = match (content_type, content_disposition) {
+            (Some(ct), Some(cd)) => Some(vec![ct, cd]),
+            (Some(ct), None) => Some(vec![ct]),
+            (None, Some(cd)) => Some(vec![cd]),
+            (None, None) => None,
+        };
+
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, 0)
+            .get_or_create_object(&req.input.bucket, &req.input.key, 0, labels)
             .await?;
 
         let (object_id, collection_id) = anotif.get_col_obj()?;
@@ -348,7 +424,7 @@ impl S3 for S3ServiceServer {
         );
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, 0)
+            .get_or_create_object(&req.input.bucket, &req.input.key, 0, None)
             .await?;
 
         anotif.get_encryption_key().await?;
@@ -417,7 +493,7 @@ impl S3 for S3ServiceServer {
         );
         anotif.set_credentials(req.credentials)?;
         anotif
-            .get_or_create_object(&req.input.bucket, &req.input.key, 0)
+            .get_or_create_object(&req.input.bucket, &req.input.key, 0, None)
             .await?;
 
         let parts = match req.input.multipart_upload {
@@ -464,21 +540,15 @@ impl S3 for S3ServiceServer {
         &self,
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
-        // Get the credentials
-        dbg!(req.credentials.clone());
-        let creds = match req.credentials {
-            Some(cred) => cred,
-            None => {
-                log::error!("{}", "Not identified PutObjectRequest");
-                return Err(s3_error!(NotSignedUp, "Your account is not signed up"));
-            }
-        };
-
         let rev_id = match req.input.version_id {
             Some(a) => a,
             None => String::new(),
         };
 
+        let access_key = match req.credentials {
+            Some(cred) => cred.access_key,
+            None => String::new(),
+        };
         let get_location_response = self
             .data_handler
             .internal_notifier_service
@@ -486,7 +556,7 @@ impl S3 for S3ServiceServer {
             .get_object_location(GetObjectLocationRequest {
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
-                access_key: creds.access_key,
+                access_key,
                 endpoint_id: self.data_handler.settings.endpoint_id.to_string(),
             })
             .await
@@ -494,8 +564,17 @@ impl S3 for S3ServiceServer {
             .into_inner();
 
         let cors: CORSVec = get_location_response.cors_configurations.into();
-
-        let headers: Result<HeaderMap, S3Error> = cors.into();
+        let header: Result<HeaderMap, S3Error> = cors.into();
+        let headers = match header {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("{}", e);
+                return Err(s3_error!(
+                    InternalError,
+                    "Internal parsing error for header values"
+                ));
+            }
+        };
 
         let _location = get_location_response
             .location
@@ -505,6 +584,8 @@ impl S3 for S3ServiceServer {
             .object
             .clone()
             .ok_or_else(|| s3_error!(NoSuchKey, "Key not found, object"))?;
+
+        let content_headers: ContentHeaders = object.labels.into();
 
         let sha256_hash = object
             .hashes
@@ -667,11 +748,15 @@ impl S3 for S3ServiceServer {
             last_modified: Some(timestamp),
             e_tag: Some(format!("-{}", object.id)),
             version_id: Some(format!("{}", object.rev_number)),
+            content_type: content_headers.content_type,
+            content_disposition: match content_headers.content_disposition {
+                Some(c) => Some(c),
+                None => Some(["attachment; filename=".to_string(), object.filename].join("")),
+            },
             ..Default::default()
         });
 
-        response.headers =
-            headers.map_err(|_| s3_error!(InternalError, "Internal parsing error"))?;
+        response.headers = headers;
 
         Ok(response)
     }
@@ -747,6 +832,9 @@ impl S3 for S3ServiceServer {
             user_client.interceptor,
         );
 
+        // This needs to be changed, but querying a collection would introduce an
+        // additional unwanted request. Maybe we need add_label_to_collection() instead of
+        // update_collection()
         let mut collection = match client
             .get_collection_by_id(GetCollectionByIdRequest {
                 collection_id: collection.collection_id.clone(),
@@ -769,8 +857,6 @@ impl S3 for S3ServiceServer {
         match client
             .update_collection(UpdateCollectionRequest {
                 collection_id: collection.id,
-                // This needs to be changed, but querying a collection would introduce an
-                // additional unwanted request. Maybe we need a add_label_to_collection method?
                 name: collection.name,
                 labels: cors,
                 description: collection.description,
@@ -918,6 +1004,8 @@ impl S3 for S3ServiceServer {
             .object
             .ok_or_else(|| s3_error!(NoSuchKey, "Key not found, tag: head_obj"))?;
 
+        let content_headers: ContentHeaders = object.labels.into();
+
         let sha256_hash = object
             .hashes
             .iter()
@@ -942,6 +1030,11 @@ impl S3 for S3ServiceServer {
             checksum_sha256: Some(sha256_hash.hash),
             e_tag: Some(object.id),
             version_id: Some(format!("{}", object.rev_number)),
+            content_type: content_headers.content_type,
+            content_disposition: match content_headers.content_disposition {
+                Some(c) => Some(c),
+                None => Some(["attachment; filename=".to_string(), object.filename].join("")),
+            },
             ..Default::default()
         }))
     }
@@ -1211,5 +1304,14 @@ impl S3 for S3ServiceServer {
             NotImplemented,
             "CreateBucket is not implemented yet"
         ))
+    }
+    async fn get_bucket_location(
+        &self,
+        _req: S3Request<GetBucketLocationInput>,
+    ) -> S3Result<S3Response<GetBucketLocationOutput>> {
+        // None for now
+        Ok(S3Response::new(GetBucketLocationOutput {
+            location_constraint: None,
+        }))
     }
 }
