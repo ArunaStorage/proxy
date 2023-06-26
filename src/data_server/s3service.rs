@@ -948,12 +948,137 @@ impl S3 for S3ServiceServer {
 
     async fn list_objects(
         &self,
-        _req: S3Request<ListObjectsInput>,
+        req: S3Request<ListObjectsInput>,
     ) -> S3Result<S3Response<ListObjectsOutput>> {
-        Err(s3_error!(
-            NotImplemented,
-            "ListObjects is not implemented yet"
-        ))
+        let mut auth_client = InternalAuthorizeServiceClient::connect(self.aruna_internal.clone())
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(InternalError, "Unable to connect to ArunaServer")
+            })?;
+
+        let credentials = req
+            .credentials
+            .ok_or_else(|| s3_error!(NotSignedUp, "Your account is not signed up"))?;
+
+        let token = auth_client
+            .get_token_from_secret(GetTokenFromSecretRequest {
+                authorization: Some(Authorization {
+                    secretkey: credentials.secret_key.expose().to_string(),
+                    accesskey: credentials.access_key.clone(),
+                }),
+            })
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(NotSignedUp, "Your account is not signed up")
+            })?
+            .into_inner()
+            .token;
+
+        let user_client = user_client::UserClient::new(self.aruna_external.clone(), token)
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(InternalError, "Unable to connect to endpoint")
+            })?;
+
+        let channel = user_client.endpoint.connect().await.map_err(|e| {
+            log::error!("{}", e);
+            s3_error!(InternalError, "Unable to connect to endpoint")
+        })?;
+
+        let mut client = object_service_client::ObjectServiceClient::with_interceptor(
+            channel,
+            user_client.interceptor,
+        );
+
+        let max_keys = match req.input.max_keys {
+            Some(k) => Some(k as u32),
+            None => None,
+        };
+
+        let response = client
+            .get_objects_as_list_v2(GetObjectsAsListV2Request {
+                bucket: req.input.bucket,
+                continuation_token: req.input.marker.clone(),
+                delimiter: req.input.delimiter.clone(),
+                max_keys,
+                prefix: req.input.prefix.clone(),
+                start_after: req.input.marker.clone(),
+            })
+            .await
+            .map_err(|e| {
+                log::error!("{}", e);
+                s3_error!(
+                    InternalError,
+                    "Error while requesting ListObjectsV2 from Server"
+                )
+            })?
+            .into_inner();
+
+        let common_prefixes = if response.prefixes.is_empty() {
+            None
+        } else {
+            Some(
+                response
+                    .prefixes
+                    .into_iter()
+                    .map(|p| CommonPrefix {
+                        prefix: Some(p.prefix),
+                    })
+                    .collect(),
+            )
+        };
+
+        let contents = if response.contents.is_empty() {
+            None
+        } else {
+            Some(
+                response
+                    .contents
+                    .into_iter()
+                    .map(|c| {
+                        // TODO! Timestamp conversion into s3s::dto::TimeStamp from
+                        // prost_types::protobuf::Timestamp
+                        let timestamp = match c.created {
+                            Some(t) => Timestamp::parse(
+                                TimestampFormat::EpochSeconds,
+                                format!("{}", t.seconds).as_str(),
+                            )
+                            .ok(),
+                            None => None,
+                        };
+
+                        s3s::dto::Object {
+                            checksum_algorithm: None,
+                            e_tag: Some(c.id),
+                            // This needs to be changed to path
+                            // --> ObjectWithUrl
+                            key: Some(c.filename),
+                            last_modified: timestamp,
+                            owner: None,
+                            size: c.content_len,
+                            // Needs to be parsed correctly
+                            // --> data_class
+                            storage_class: None,
+                        }
+                    })
+                    .collect(),
+            )
+        };
+        Ok(S3Response::new(ListObjectsOutput {
+            name: Some(response.name),
+            common_prefixes,
+            marker: req.input.marker,
+            next_marker: response.next_continuation_token,
+            delimiter: req.input.delimiter,
+            encoding_type: None,
+            is_truncated: response.is_truncated,
+            max_keys: response.max_keys as i32,
+            prefix: req.input.prefix,
+            contents,
+        }))
     }
 
     async fn list_objects_v2(
