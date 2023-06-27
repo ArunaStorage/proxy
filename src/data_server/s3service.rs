@@ -1127,38 +1127,34 @@ impl S3 for S3ServiceServer {
         let contents = if response.contents.is_empty() {
             None
         } else {
-            Some(
-                response
-                    .contents
-                    .into_iter()
-                    .map(|c| {
-                        // TODO! Timestamp conversion into s3s::dto::TimeStamp from
-                        // prost_types::protobuf::Timestamp
-                        let timestamp = match c.created {
-                            Some(t) => Timestamp::parse(
-                                TimestampFormat::EpochSeconds,
-                                format!("{}", t.seconds).as_str(),
-                            )
-                            .ok(),
-                            None => None,
-                        };
+            let mut contents = Vec::new();
+            for content in response.contents {
+                let object = match content.object {
+                    Some(o) => o,
+                    None => continue,
+                };
+                let timestamp = match object.created {
+                    Some(t) => Timestamp::parse(
+                        TimestampFormat::EpochSeconds,
+                        format!("{}", t.seconds).as_str(),
+                    )
+                    .ok(),
+                    None => None,
+                };
 
-                        s3s::dto::Object {
-                            checksum_algorithm: None,
-                            e_tag: Some(c.id),
-                            // This needs to be changed to path
-                            // --> ObjectWithUrl
-                            key: Some(c.filename),
-                            last_modified: timestamp,
-                            owner: None,
-                            size: c.content_len,
-                            // Needs to be parsed correctly
-                            // --> data_class
-                            storage_class: None,
-                        }
-                    })
-                    .collect(),
-            )
+                contents.push(s3s::dto::Object {
+                    checksum_algorithm: None,
+                    e_tag: Some(object.id),
+                    key: Some(content.paths[0].clone()),
+                    last_modified: timestamp,
+                    owner: None,
+                    size: object.content_len,
+                    // Needs to be parsed correctly
+                    // --> data_class
+                    storage_class: None,
+                });
+            }
+            Some(contents)
         };
         Ok(S3Response::new(ListObjectsOutput {
             name: Some(response.name),
@@ -1262,23 +1258,34 @@ impl S3 for S3ServiceServer {
         let contents = if response.contents.is_empty() {
             None
         } else {
-            Some(
-                response
-                    .contents
-                    .into_iter()
-                    .map(|c| s3s::dto::Object {
-                        checksum_algorithm: None,
-                        e_tag: Some(c.id),
-                        // This needs to be changed to path
-                        key: Some(c.filename),
-                        last_modified: None,
-                        owner: None,
-                        size: c.content_len,
-                        // Needs to be parsed correctly
-                        storage_class: None,
-                    })
-                    .collect(),
-            )
+            let mut contents = Vec::new();
+            for content in response.contents {
+                let object = match content.object {
+                    Some(o) => o,
+                    None => continue,
+                };
+                let timestamp = match object.created {
+                    Some(t) => Timestamp::parse(
+                        TimestampFormat::EpochSeconds,
+                        format!("{}", t.seconds).as_str(),
+                    )
+                    .ok(),
+                    None => None,
+                };
+
+                contents.push(s3s::dto::Object {
+                    checksum_algorithm: None,
+                    e_tag: Some(object.id),
+                    key: Some(content.paths[0].clone()),
+                    last_modified: timestamp,
+                    owner: None,
+                    size: object.content_len,
+                    // Needs to be parsed correctly
+                    // --> data_class
+                    storage_class: None,
+                });
+            }
+            Some(contents)
         };
         Ok(S3Response::new(ListObjectsV2Output {
             name: Some(response.name),

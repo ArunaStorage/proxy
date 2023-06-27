@@ -3,7 +3,7 @@ use aruna_rust_api::api::internal::v1::{
     internal_authorize_service_client::InternalAuthorizeServiceClient, GetSecretRequest,
 };
 use s3s::{
-    auth::{Credentials, S3Auth, S3AuthContext, SecretKey},
+    auth::{S3Auth, S3AuthContext, SecretKey},
     s3_error, S3Result,
 };
 use tonic::Request;
