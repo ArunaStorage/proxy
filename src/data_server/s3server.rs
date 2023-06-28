@@ -21,6 +21,7 @@ impl S3Server {
         aruna_api: impl Into<String>,
         backend: Arc<Box<dyn StorageBackend>>,
         data_handler: Arc<DataHandler>,
+        //        endpoint_id: impl Into<String>,
     ) -> Result<Self> {
         let server_url = aruna_server.into();
 
