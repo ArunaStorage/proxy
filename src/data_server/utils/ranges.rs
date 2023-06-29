@@ -21,8 +21,8 @@ pub fn calculate_ranges(
                 let mut ar_range = aruna_range_from_s3range(r, content_length);
                 ar_range.to += 1;
                 Ok((
-                    Some(format!("bytes={}-{}", ar_range.from, ar_range.to)),
                     None,
+                    Some(ar_range), //Some(format!("bytes={}-{}", ar_range.from, ar_range.to)),
                 ))
             }
         },
