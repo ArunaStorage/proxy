@@ -34,7 +34,7 @@ impl From<Vec<KeyValue>> for ContentHeaders {
         let content_type: Vec<KeyValue> = labels
             .clone()
             .into_iter()
-            .filter(|label| label.key == "apps.aruna-storage.org/content-type".to_string())
+            .filter(|label| label.key == "app.aruna-storage.org/content-type".to_string())
             .collect();
         let content_type = match content_type.get(0) {
             Some(label) => mime::Mime::from_str(&label.value).ok(),
@@ -42,7 +42,7 @@ impl From<Vec<KeyValue>> for ContentHeaders {
         };
         let content_disposition: Vec<KeyValue> = labels
             .into_iter()
-            .filter(|label| label.key == "apps.aruna-storage.org/content-disposition".to_string())
+            .filter(|label| label.key == "app.aruna-storage.org/content-disposition".to_string())
             .collect();
         let content_disposition = match content_disposition.get(0) {
             Some(label) => Some(label.value.clone()),
@@ -93,7 +93,7 @@ impl From<CORSVec> for Result<Vec<KeyValue>, s3s::S3Error> {
             .into_iter()
             .map(|c| {
                 Ok(KeyValue {
-                    key: "apps.aruna-storage.org/cors".to_string(),
+                    key: "app.aruna-storage.org/cors".to_string(),
                     value: serde_json::to_string(&c).map_err(|e| {
                         log::debug!("{}", e);
                         s3_error!(InternalError, "Error while parsing CORS headers")
@@ -161,7 +161,7 @@ impl From<Vec<KeyValue>> for CORSVec {
     fn from(label_vec: Vec<KeyValue>) -> Self {
         let mut cors_vec = CORSVec { cors: vec![] };
         for label in label_vec {
-            if label.key.contains("apps.aruna-storage.org/cors") {
+            if label.key.contains("app.aruna-storage.org/cors") {
                 let cors = match serde_json::from_str::<CORS>(&label.value) {
                     Ok(c) => CORS {
                         methods: c.methods,

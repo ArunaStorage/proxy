@@ -74,7 +74,7 @@ async fn main() {
         aruna_api,
         storage_backend.clone(),
         data_handler.clone(),
-        //endpoint_id,
+        endpoint_id,
     )
     .await
     .unwrap();

@@ -56,6 +56,7 @@ pub struct S3ServiceServer {
     data_handler: Arc<DataHandler>,
     aruna_external: String,
     aruna_internal: String,
+    endpoint_id: String,
 }
 
 impl S3ServiceServer {
@@ -64,12 +65,14 @@ impl S3ServiceServer {
         data_handler: Arc<DataHandler>,
         aruna_external: String,
         aruna_internal: String,
+        endpoint_id: String,
     ) -> Result<Self> {
         Ok(S3ServiceServer {
             backend: backend.clone(),
             data_handler,
             aruna_external,
             aruna_internal,
+            endpoint_id,
         })
     }
 }
@@ -102,7 +105,7 @@ impl S3 for S3ServiceServer {
                     None
                 } else {
                     Some(KeyValue {
-                        key: "apps.aruna-storage.org/content-type".to_string(),
+                        key: "app.aruna-storage.org/content-type".to_string(),
                         value: content_type.to_string(),
                     })
                 }
@@ -117,7 +120,7 @@ impl S3 for S3ServiceServer {
                     None
                 } else {
                     Some(KeyValue {
-                        key: "apps.aruna-storage.org/content-disposition".to_string(),
+                        key: "app.aruna-storage.org/content-disposition".to_string(),
                         value: content_disposition.to_string(),
                     })
                 }
@@ -148,7 +151,7 @@ impl S3 for S3ServiceServer {
                 if !h.is_empty() && h.len() == 32 {
                     self.backend
                         .head_object(ArunaLocation {
-                            bucket: format!("{}-{}", &self.aruna_internal, &h[0..2]),
+                            bucket: format!("{}-{}", &self.endpoint_id.to_lowercase(), &h[0..2]),
                             path: h[2..].to_string(),
                             ..Default::default()
                         })
@@ -205,6 +208,7 @@ impl S3 for S3ServiceServer {
                         );
                     }
 
+                    dbg!(location.clone());
                     if location.is_compressed {
                         if content_length > 5242880 + 80 * 28 {
                             awr = awr.add_transformer(FooterGenerator::new(None, true))
@@ -343,7 +347,7 @@ impl S3 for S3ServiceServer {
                     None
                 } else {
                     Some(KeyValue {
-                        key: "apps.aruna-storage.org/content-type".to_string(),
+                        key: "app.aruna-storage.org/content-type".to_string(),
                         value: content_type.to_string(),
                     })
                 }
@@ -357,7 +361,7 @@ impl S3 for S3ServiceServer {
                     None
                 } else {
                     Some(KeyValue {
-                        key: "apps.aruna-storage.org/content-disposition".to_string(),
+                        key: "app.aruna-storage.org/content-disposition".to_string(),
                         value: content_disposition.to_string(),
                     })
                 }
@@ -384,7 +388,7 @@ impl S3 for S3ServiceServer {
             .backend
             .clone()
             .init_multipart_upload(ArunaLocation {
-                bucket: format!("{}-temp", self.aruna_internal),
+                bucket: format!("{}-temp", self.endpoint_id.to_lowercase()),
                 path: format!("{}/{}", collection_id, object_id),
                 ..Default::default()
             })
@@ -439,7 +443,7 @@ impl S3 for S3ServiceServer {
                     BufferedS3Sink::new(
                         self.backend.clone(),
                         ArunaLocation {
-                            bucket: format!("{}-temp", &self.aruna_internal),
+                            bucket: format!("{}-temp", &self.endpoint_id.to_lowercase()),
                             path: format!("{}/{}", collection_id, object_id),
                             ..Default::default()
                         },
@@ -611,7 +615,11 @@ impl S3 for S3ServiceServer {
             .content_len;
 
         let get_location = ArunaLocation {
-            bucket: format!("{}-{}", &self.aruna_internal, &sha256_hash.hash[0..2]),
+            bucket: format!(
+                "{}-{}",
+                &self.endpoint_id.to_lowercase(),
+                &sha256_hash.hash[0..2]
+            ),
             path: sha256_hash.hash[2..].to_string(),
             ..Default::default()
         };
@@ -984,7 +992,6 @@ impl S3 for S3ServiceServer {
             .internal_notifier_service
             .clone()
             .get_object_location(GetObjectLocationRequest {
-                // Soll auch die CORS header mitliefern aus der Collection
                 path: format!("s3://{}/{}", req.input.bucket, req.input.key),
                 revision_id: rev_id,
                 access_key: creds.access_key,

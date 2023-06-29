@@ -21,13 +21,19 @@ impl S3Server {
         aruna_api: impl Into<String>,
         backend: Arc<Box<dyn StorageBackend>>,
         data_handler: Arc<DataHandler>,
-        //        endpoint_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
     ) -> Result<Self> {
         let server_url = aruna_server.into();
 
         let mut service = S3ServiceBuilder::new(
-            S3ServiceServer::new(backend, data_handler, aruna_api.into(), server_url.clone())
-                .await?,
+            S3ServiceServer::new(
+                backend,
+                data_handler,
+                aruna_api.into(),
+                server_url.clone(),
+                endpoint_id.into(),
+            )
+            .await?,
         );
 
         service.set_base_domain(hostname);

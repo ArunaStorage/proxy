@@ -47,8 +47,11 @@ impl tonic::service::Interceptor for ClientInterceptor {
         let mut mut_req: tonic::Request<()> = request;
         let metadata = mut_req.metadata_mut();
         metadata.append(
-            AsciiMetadataKey::from_bytes(API_TOKEN_ENTRY_KEY.as_bytes()).unwrap(),
-            AsciiMetadataValue::try_from(format!("Bearer {}", self.api_token.as_str())).unwrap(),
+            AsciiMetadataKey::from_bytes(API_TOKEN_ENTRY_KEY.as_bytes()).map_err(|_| {
+                tonic::Status::invalid_argument("Error while parsing authorization header")
+            })?,
+            AsciiMetadataValue::try_from(format!("Bearer {}", self.api_token.as_str()))
+                .map_err(|_| tonic::Status::invalid_argument("Invalid Bearer Token"))?,
         );
 
         return Ok(mut_req);
