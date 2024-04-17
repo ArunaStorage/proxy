@@ -1,3 +1,6 @@
+# DEPRECATED: This is an old version of the proxy component. All code has been merged into: https://github.com/ArunaStorage/aruna/tree/main/components/data_proxy
+
+
 [![Rust](https://img.shields.io/badge/built_with-Rust-dca282.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-brightgreen.svg)](https://github.com/ArunaStorage/ArunaServer/blob/main/LICENSE-APACHE)
 [![Dependency status](https://deps.rs/repo/github/ArunaStorage/DataProxy/status.svg)](https://deps.rs/repo/github/ArunaStorage/DataProxy)
